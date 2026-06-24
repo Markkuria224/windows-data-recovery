@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>VaultDrop Secure Share</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="backdrop"></div>
+  <div class="shell">
+    <header class="hero">
+      <div>
+        <p class="eyebrow">Client-Side Encryption Demo</p>
+        <h1>VaultDrop Secure Share</h1>
+      </div>
+      <p class="hero-copy">
+        Encrypt a file in your browser, upload only ciphertext to the server, and
+        share a link plus passphrase separately.
+      </p>
+    </header>
+
+    <main class="grid">
+      <section class="panel">
+        <p class="section-kicker">Create Share</p>
+        <h2>Encrypt Before Upload</h2>
+        <form id="share-form">
+          <label class="field">
+            <span>Choose file</span>
+            <input id="file-input" type="file" required>
+          </label>
+
+          <label class="field">
+            <span>Passphrase</span>
+            <input id="passphrase-input" type="password" minlength="8" placeholder="At least 8 characters" required>
+          </label>
+
+          <div class="inline-fields">
+            <label class="field">
+              <span>Expiry</span>
+              <select id="expiry-input">
+                <option value="1">1 hour</option>
+                <option value="24" selected>24 hours</option>
+                <option value="72">72 hours</option>
+                <option value="168">7 days</option>
+              </select>
+            </label>
+
+            <label class="field">
+              <span>Max downloads</span>
+              <select id="downloads-input">
+                <option value="1">1</option>
+                <option value="3" selected>3</option>
+                <option value="5">5</option>
+                <option value="10">10</option>
+              </select>
+            </label>
+          </div>
+
+          <button type="submit" id="share-button">Create Secure Link</button>
+        </form>
+
+        <section id="result-panel" class="result hidden" aria-live="polite">
+          <h3>Share Ready</h3>
+          <p>Send the link and passphrase in separate channels.</p>
+          <label class="field">
+            <span>Share link</span>
+            <div class="copy-row">
+              <input id="share-link-output" type="text" readonly>
+              <button type="button" data-copy-target="share-link-output">Copy</button>
+            </div>
+          </label>
+          <label class="field">
+            <span>Passphrase</span>
+            <div class="copy-row">
+              <input id="passphrase-output" type="text" readonly>
+              <button type="button" data-copy-target="passphrase-output">Copy</button>
+            </div>
+          </label>
+          <p id="share-meta"></p>
+        </section>
+      </section>
+
+      <aside class="stack">
+        <section class="panel">
+          <p class="section-kicker">How It Works</p>
+          <h2>Threat Model</h2>
+          <ul class="plain-list">
+            <li>The browser derives an AES-GCM key from your passphrase with PBKDF2.</li>
+            <li>The server receives only encrypted bytes plus decryption metadata.</li>
+            <li>Links expire automatically and can be limited to a set number of downloads.</li>
+            <li>You must share the passphrase out-of-band for the recipient to decrypt.</li>
+          </ul>
+        </section>
+
+        <section class="panel">
+          <p class="section-kicker">Active Shares</p>
+          <h2>Server Overview</h2>
+          <div id="share-list" class="share-list"></div>
+        </section>
+      </aside>
+    </main>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

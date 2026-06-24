@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PhishSense Trainer</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="page-shell">
+    <header class="hero">
+      <p class="eyebrow">Cybersecurity Training Lab</p>
+      <h1>PhishSense Trainer</h1>
+      <p class="hero-copy">
+        Practice spotting phishing attempts with realistic email and SMS scenarios,
+        then review the clues behind every answer.
+      </p>
+    </header>
+
+    <main class="layout">
+      <section class="panel scenario-panel" aria-labelledby="scenario-title">
+        <div class="panel-header">
+          <div>
+            <p class="section-kicker">Scenario</p>
+            <h2 id="scenario-title">Inbox Review</h2>
+          </div>
+          <div class="pill-row">
+            <span class="pill" id="scenario-type">Email</span>
+            <span class="pill" id="scenario-difficulty">Beginner</span>
+          </div>
+        </div>
+
+        <article class="message-card">
+          <div class="message-meta">
+            <div>
+              <span class="meta-label">From</span>
+              <p id="sender"></p>
+            </div>
+            <div>
+              <span class="meta-label">Subject</span>
+              <p id="subject"></p>
+            </div>
+          </div>
+
+          <div class="message-body">
+            <pre id="content"></pre>
+          </div>
+        </article>
+
+        <div class="actions">
+          <button class="decision safe" id="safe-button" type="button">Mark Safe</button>
+          <button class="decision phishing" id="phishing-button" type="button">Mark Phishing</button>
+        </div>
+
+        <section class="feedback hidden" id="feedback" aria-live="polite">
+          <h3 id="feedback-heading"></h3>
+          <p id="feedback-copy"></p>
+          <div>
+            <h4>Red Flags</h4>
+            <ul id="red-flags"></ul>
+          </div>
+          <button class="next-button" id="next-button" type="button">Next Scenario</button>
+        </section>
+      </section>
+
+      <aside class="sidebar">
+        <section class="panel">
+          <p class="section-kicker">Progress</p>
+          <h2>Scoreboard</h2>
+          <div class="score-grid">
+            <div class="score-card">
+              <span class="score-label">Scenarios</span>
+              <strong id="progress-count">1 / 6</strong>
+            </div>
+            <div class="score-card">
+              <span class="score-label">Correct</span>
+              <strong id="correct-count">0</strong>
+            </div>
+            <div class="score-card">
+              <span class="score-label">Accuracy</span>
+              <strong id="accuracy-rate">0%</strong>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <p class="section-kicker">Skill Gaps</p>
+          <h2>Focus Areas</h2>
+          <div id="weakness-list" class="weakness-list"></div>
+        </section>
+
+        <section class="panel hidden" id="summary-panel">
+          <p class="section-kicker">Round Complete</p>
+          <h2>Review</h2>
+          <p id="summary-text"></p>
+          <button class="next-button" id="restart-button" type="button">Restart Round</button>
+        </section>
+      </aside>
+    </main>
+  </div>
+
+  <script src="script.js"></script>
+</body>
+</html>
