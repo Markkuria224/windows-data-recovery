@@ -1,5 +1,6 @@
 import collections
 import io
+import json
 import os
 import tempfile
 import unittest
@@ -9,6 +10,8 @@ from unittest.mock import patch
 import recovery_mvp
 from recovery_mvp import (
     FileSignature,
+    RecoveryMetadata,
+    SignatureScanner,
     estimate_confidence,
     select_signatures,
     scan_source,
@@ -110,6 +113,95 @@ class RecoveryMvpTest(unittest.TestCase):
             recovered_files = list(output_dir.iterdir())
             self.assertEqual(len(recovered_files), 1)
             self.assertEqual(recovered_files[0].stat().st_size, 8)
+
+    def test_recovery_metadata_is_populated_for_successful_candidate(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_dir = Path(temp_dir)
+            output_dir = temp_dir / "output"
+            output_dir.mkdir()
+            signature = FileSignature(
+                "jpeg",
+                ".jpg",
+                b"\xff\xd8\xff",
+                b"\xff\xd9",
+                1024,
+                recovery_mvp.JPEGValidator(),
+            )
+            source_bytes = (
+                b"\xff\xd8"
+                b"\xff\xe0\x00\x10JFIF\x00\x01\x02\x00\x00\x01\x00\x01\x00\x00"
+                b"\xff\xda\x00\x08\x01\x01\x00\x00?\x00\xff\xd9"
+            )
+            source = io.BytesIO(b"")
+            scanner = SignatureScanner((signature,))
+
+            result = scanner._recover_candidate(source, source_bytes, signature, output_dir, 0, 1024, 1)
+
+            self.assertEqual(result.metadata.file_type, "jpeg")
+            self.assertEqual(result.metadata.extension, ".jpg")
+            self.assertEqual(result.metadata.offset, 0)
+            self.assertEqual(result.metadata.size, len(source_bytes))
+            self.assertEqual(result.metadata.confidence_percent, result.confidence_percent)
+            self.assertEqual(result.metadata.output_name, result.path.name)
+            self.assertEqual(result.metadata.validation_status, "valid")
+            self.assertIn("JPEG validation", result.metadata.validation_reason)
+
+    def test_recovery_metadata_reports_validation_failure(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_dir = Path(temp_dir)
+            output_dir = temp_dir / "output"
+            output_dir.mkdir()
+            signature = FileSignature("png", ".png", b"\x89PNG\r\n\x1a\n", b"IEND\xaeB`\x82", 1024, recovery_mvp.PNGValidator())
+            source_bytes = b"\x89PNG\r\n\x1a\n" + b"BAD" * 3  # invalid PNG content, missing IEND"
+            source = io.BytesIO(source_bytes)
+            scanner = SignatureScanner((signature,))
+
+            result = scanner._recover_candidate(source, source_bytes, signature, output_dir, 0, 1024, 1)
+
+            self.assertEqual(result.metadata.validation_status, "invalid")
+            self.assertLess(result.metadata.validation_score, 1.0)
+            self.assertEqual(result.metadata.validation_reason, "Invalid PNG chunk structure")
+            metadata = result.metadata.to_dict()
+            self.assertEqual(metadata["file_type"], "png")
+            self.assertEqual(metadata["extension"], ".png")
+            self.assertEqual(metadata["output_name"], result.path.name)
+            json_data = json.loads(result.metadata.to_json())
+            self.assertEqual(json_data["validation_status"], "invalid")
+
+    def test_recovery_metadata_tracks_truncated_candidate(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_dir = Path(temp_dir)
+            output_dir = temp_dir / "output"
+            output_dir.mkdir()
+            signature = FileSignature("pdf", ".pdf", b"%PDF-", b"%%EOF", 1024, recovery_mvp.PDFValidator())
+            source_bytes = b"%PDF-" + b"X" * 10  # truncated PDF without EOF
+            source = io.BytesIO(source_bytes)
+            scanner = SignatureScanner((signature,))
+
+            result = scanner._recover_candidate(source, source_bytes, signature, output_dir, 0, 1024, 1)
+
+            self.assertEqual(result.metadata.size, result.bytes_written)
+            self.assertEqual(result.metadata.validation_status, "invalid")
+            self.assertIn("Missing %EOF", result.metadata.validation_reason)
+
+    def test_recovery_metadata_serializes_to_json(self):
+        metadata = RecoveryMetadata(
+            file_type="jpeg",
+            extension=".jpg",
+            offset=123,
+            size=456,
+            validation_score=0.95,
+            validation_reason="JPEG validation: has_header, has_footer",
+            validation_status="valid",
+            confidence_percent=85,
+            output_path=Path("/tmp/000001_jpeg_123.jpg"),
+            output_name="000001_jpeg_123.jpg",
+        )
+        json_data = json.loads(metadata.to_json())
+        self.assertEqual(json_data["file_type"], "jpeg")
+        self.assertEqual(json_data["offset"], 123)
+        self.assertEqual(json_data["confidence_percent"], 85)
+        self.assertEqual(json_data["output_name"], "000001_jpeg_123.jpg")
 
     def test_random_binary_input_recovers_nothing(self):
         with tempfile.TemporaryDirectory() as temp_dir:

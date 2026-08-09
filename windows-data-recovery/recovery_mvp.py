@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import binascii
 import ctypes
+import json
 import os
 import re
 import string
@@ -27,15 +28,64 @@ class FileSignature:
 
 
 @dataclass(frozen=True)
+class RecoveryMetadata:
+    file_type: str
+    extension: str
+    offset: int
+    size: int
+    validation_score: float
+    validation_reason: str
+    validation_status: str
+    confidence_percent: int
+    output_path: Path
+    output_name: str
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "file_type": self.file_type,
+            "extension": self.extension,
+            "offset": self.offset,
+            "size": self.size,
+            "validation_score": self.validation_score,
+            "validation_reason": self.validation_reason,
+            "validation_status": self.validation_status,
+            "confidence_percent": self.confidence_percent,
+            "output_path": str(self.output_path),
+            "output_name": self.output_name,
+        }
+
+    def to_json(self) -> str:
+        return json.dumps(self.to_dict())
+
+
+@dataclass(frozen=True)
 class RecoveryResult:
     path: Path
     bytes_written: int
     confidence_percent: int
     extra_stream_bytes_read: int
     initial_bytes_consumed: int
-    file_type: str
-    validation_score: float
-    validation_reason: str
+    metadata: RecoveryMetadata
+
+    @property
+    def file_type(self) -> str:
+        return self.metadata.file_type
+
+    @property
+    def validation_score(self) -> float:
+        return self.metadata.validation_score
+
+    @property
+    def validation_reason(self) -> str:
+        return self.metadata.validation_reason
+
+    @property
+    def validation_status(self) -> str:
+        return self.metadata.validation_status
+
+    @property
+    def extension(self) -> str:
+        return self.metadata.extension
 
 
 @dataclass(frozen=True)
@@ -589,21 +639,35 @@ class SignatureScanner:
 
         validation_score = 0.0
         validation_reason = "No validator"
+        validation_status = "unknown"
         validator = get_validator_for_signature(signature)
         if validator is not None:
             validation = validator.validate(bytes(recovered_data))
             validation_score = validation.score
             validation_reason = validation.reason
+            validation_status = "valid" if validation.valid else "invalid"
+
+        confidence = estimate_confidence(signature, footer_found, written, max_bytes)
+        metadata = RecoveryMetadata(
+            file_type=signature.name,
+            extension=signature.extension,
+            offset=file_offset,
+            size=written,
+            validation_score=validation_score,
+            validation_reason=validation_reason,
+            validation_status=validation_status,
+            confidence_percent=confidence,
+            output_path=path,
+            output_name=path.name,
+        )
 
         return RecoveryResult(
             path,
             written,
-            estimate_confidence(signature, footer_found, written, max_bytes),
+            confidence,
             extra_stream_bytes_read,
             initial_bytes_consumed,
-            signature.name,
-            validation_score,
-            validation_reason,
+            metadata,
         )
 
 
