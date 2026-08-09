@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import binascii
 import ctypes
 import os
 import re
@@ -22,6 +23,7 @@ class FileSignature:
     header: bytes
     footer: bytes | None
     default_max_bytes: int
+    validator: FileValidator | None = None
 
 
 @dataclass(frozen=True)
@@ -106,7 +108,6 @@ class JPEGValidator:
     def _parse_markers(self, data: bytes) -> tuple[bool, str, bool]:
         pos = 2
         valid_lengths = True
-        found_sos = False
         while pos < len(data) - 1:
             if data[pos] != 0xFF:
                 pos += 1
@@ -130,7 +131,6 @@ class JPEGValidator:
                 continue
 
             if marker == 0xDA:
-                found_sos = True
                 scan_pos = pos
                 while scan_pos < len(data) - 1:
                     if data[scan_pos] == 0xFF:
@@ -152,18 +152,164 @@ class JPEGValidator:
         return False, "Missing JPEG EOI", False
 
 
+class PNGValidator:
+    WEIGHTS = {
+        "has_header": 20,
+        "has_iend": 20,
+        "valid_chunk_structure": 30,
+        "valid_crc": 20,
+        "reasonable_size": 10,
+    }
+
+    def __init__(self) -> None:
+        self.scorer = ConfidenceScorer(self.WEIGHTS)
+
+    def validate(self, data: bytes) -> ValidationResult:
+        if len(data) < 8 or data[:8] != b"\x89PNG\r\n\x1a\n":
+            return ValidationResult(False, 0.0, "Missing PNG signature")
+
+        evidence: dict[str, bool] = {
+            "has_header": True,
+            "has_iend": False,
+            "valid_chunk_structure": False,
+            "valid_crc": False,
+            "reasonable_size": len(data) >= 32,
+        }
+
+        pos = 8
+        valid_structure = True
+        crc_ok = True
+        has_iend = False
+
+        while pos + 8 <= len(data):
+            length = int.from_bytes(data[pos:pos + 4], "big")
+            chunk_type = data[pos + 4:pos + 8]
+            pos += 8
+            if pos + length + 4 > len(data):
+                valid_structure = False
+                break
+
+            chunk_data = data[pos:pos + length]
+            pos += length
+            crc_stored = int.from_bytes(data[pos:pos + 4], "big")
+            pos += 4
+            crc_calculated = binascii.crc32(chunk_type + chunk_data) & 0xFFFFFFFF
+            if crc_calculated != crc_stored:
+                crc_ok = False
+                valid_structure = False
+                break
+
+            if chunk_type == b"IEND":
+                has_iend = True
+                break
+
+        evidence["has_iend"] = has_iend
+        evidence["valid_chunk_structure"] = valid_structure and has_iend
+        evidence["valid_crc"] = crc_ok and has_iend
+
+        if not valid_structure:
+            return ValidationResult(False, 0.0, "Invalid PNG chunk structure")
+
+        if not has_iend:
+            score, messages = self.scorer.score(evidence)
+            return ValidationResult(False, score, "Missing IEND chunk")
+
+        score, messages = self.scorer.score(evidence)
+        return ValidationResult(True, score, "PNG validation: " + ", ".join(messages))
+
+
+class PDFValidator:
+    WEIGHTS = {
+        "has_header": 25,
+        "has_eof": 25,
+        "has_startxref": 20,
+        "has_xref": 20,
+        "reasonable_size": 10,
+    }
+
+    def __init__(self) -> None:
+        self.scorer = ConfidenceScorer(self.WEIGHTS)
+
+    def validate(self, data: bytes) -> ValidationResult:
+        if not data.startswith(b"%PDF-"):
+            return ValidationResult(False, 0.0, "Missing PDF header")
+
+        tail = data[-512:]
+        evidence: dict[str, bool] = {
+            "has_header": True,
+            "has_eof": b"%%EOF" in tail,
+            "has_startxref": b"startxref" in tail,
+            "has_xref": b"xref" in data,
+            "reasonable_size": len(data) >= 32,
+        }
+
+        if not evidence["has_eof"]:
+            score, messages = self.scorer.score(evidence)
+            return ValidationResult(False, score, "Missing %EOF")
+
+        if not evidence["has_startxref"]:
+            score, messages = self.scorer.score(evidence)
+            return ValidationResult(False, score, "Missing startxref")
+
+        score, messages = self.scorer.score(evidence)
+        return ValidationResult(True, score, "PDF validation: " + ", ".join(messages))
+
+
+class ZIPValidator:
+    WEIGHTS = {
+        "has_header": 20,
+        "has_eocd": 25,
+        "has_central_dir": 30,
+        "valid_eocd": 15,
+        "reasonable_size": 10,
+    }
+
+    def __init__(self) -> None:
+        self.scorer = ConfidenceScorer(self.WEIGHTS)
+
+    def validate(self, data: bytes) -> ValidationResult:
+        if len(data) < 4 or not data.startswith(b"PK\x03\x04"):
+            return ValidationResult(False, 0.0, "Missing ZIP local file header")
+
+        evidence: dict[str, bool] = {
+            "has_header": True,
+            "has_eocd": False,
+            "has_central_dir": False,
+            "valid_eocd": False,
+            "reasonable_size": len(data) >= 32,
+        }
+
+        eocd_pos = data.rfind(b"PK\x05\x06")
+        if eocd_pos == -1:
+            score, messages = self.scorer.score(evidence)
+            return ValidationResult(False, score, "Missing EOCD")
+
+        evidence["has_eocd"] = True
+        if eocd_pos + 22 > len(data):
+            return ValidationResult(False, 0.0, "Truncated EOCD")
+
+        cd_size = int.from_bytes(data[eocd_pos + 12:eocd_pos + 16], "little")
+        cd_offset = int.from_bytes(data[eocd_pos + 16:eocd_pos + 20], "little")
+        evidence["valid_eocd"] = cd_offset + cd_size <= len(data)
+
+        if cd_offset + 4 <= len(data) and data[cd_offset:cd_offset + 4] == b"PK\x01\x02":
+            evidence["has_central_dir"] = True
+
+        score, messages = self.scorer.score(evidence)
+        valid = evidence["has_central_dir"] and evidence["valid_eocd"]
+        return ValidationResult(valid, score, "ZIP validation: " + ", ".join(messages))
+
+
 def get_validator_for_signature(signature: FileSignature) -> FileValidator | None:
-    if signature.name == "jpeg":
-        return JPEGValidator()
-    return None
+    return signature.validator
 
 
 SIGNATURES: tuple[FileSignature, ...] = (
-    FileSignature("jpeg", ".jpg", b"\xff\xd8\xff", b"\xff\xd9", 64 * 1024 * 1024),
-    FileSignature("png", ".png", b"\x89PNG\r\n\x1a\n", b"IEND\xaeB`\x82", 64 * 1024 * 1024),
-    FileSignature("pdf", ".pdf", b"%PDF-", b"%%EOF", 128 * 1024 * 1024),
-    FileSignature("gif", ".gif", b"GIF8", b"\x00\x3b", 32 * 1024 * 1024),
-    FileSignature("zip-office", ".zip", b"PK\x03\x04", b"PK\x05\x06", 256 * 1024 * 1024),
+    FileSignature("jpeg", ".jpg", b"\xff\xd8\xff", b"\xff\xd9", 64 * 1024 * 1024, JPEGValidator()),
+    FileSignature("png", ".png", b"\x89PNG\r\n\x1a\n", b"IEND\xaeB`\x82", 64 * 1024 * 1024, PNGValidator()),
+    FileSignature("pdf", ".pdf", b"%PDF-", b"%%EOF", 128 * 1024 * 1024, PDFValidator()),
+    FileSignature("gif", ".gif", b"GIF8", b"\x00\x3b", 32 * 1024 * 1024, None),
+    FileSignature("zip-office", ".zip", b"PK\x03\x04", b"PK\x05\x06", 256 * 1024 * 1024, ZIPValidator()),
 )
 
 
