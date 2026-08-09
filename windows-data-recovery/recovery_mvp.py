@@ -9,7 +9,7 @@ import sys
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
-from typing import BinaryIO
+from typing import BinaryIO, Protocol
 
 
 BUFFER_SIZE = 1024 * 1024
@@ -31,6 +31,131 @@ class RecoveryResult:
     confidence_percent: int
     extra_stream_bytes_read: int
     initial_bytes_consumed: int
+    file_type: str
+    validation_score: float
+    validation_reason: str
+
+
+@dataclass(frozen=True)
+class ValidationResult:
+    valid: bool
+    score: float
+    reason: str
+
+
+class FileValidator(Protocol):
+    def validate(self, data: bytes) -> ValidationResult:
+        ...
+
+
+class ConfidenceScorer:
+    def __init__(self, weights: dict[str, int]) -> None:
+        self.weights = weights
+        self.max_score = sum(weights.values())
+
+    def score(self, evidence: dict[str, bool]) -> tuple[float, list[str]]:
+        messages: list[str] = []
+        total = 0
+        for name, weight in self.weights.items():
+            if evidence.get(name, False):
+                total += weight
+                messages.append(name)
+        score = total / self.max_score if self.max_score else 0.0
+        return score, messages
+
+
+class JPEGValidator:
+    WEIGHTS = {
+        "has_header": 20,
+        "has_footer": 20,
+        "valid_markers": 30,
+        "valid_segment_lengths": 20,
+        "reasonable_size": 10,
+    }
+
+    def __init__(self) -> None:
+        self.scorer = ConfidenceScorer(self.WEIGHTS)
+
+    def validate(self, data: bytes) -> ValidationResult:
+        if len(data) < 4 or data[:2] != b"\xff\xd8":
+            return ValidationResult(False, 0.0, "Missing JPEG SOI")
+
+        evidence: dict[str, bool] = {
+            "has_header": True,
+            "has_footer": data.endswith(b"\xff\xd9"),
+            "valid_markers": False,
+            "valid_segment_lengths": False,
+            "reasonable_size": len(data) >= 16,
+        }
+
+        if not evidence["has_footer"]:
+            score, messages = self.scorer.score(evidence)
+            return ValidationResult(False, score, "Missing JPEG EOI")
+
+        parse_result = self._parse_markers(data)
+        if not parse_result[0]:
+            return ValidationResult(False, 0.0, parse_result[1])
+
+        evidence["valid_markers"] = True
+        evidence["valid_segment_lengths"] = parse_result[2]
+
+        score, messages = self.scorer.score(evidence)
+        reason = "JPEG validation: " + ", ".join(messages)
+        return ValidationResult(True, score, reason)
+
+    def _parse_markers(self, data: bytes) -> tuple[bool, str, bool]:
+        pos = 2
+        valid_lengths = True
+        found_sos = False
+        while pos < len(data) - 1:
+            if data[pos] != 0xFF:
+                pos += 1
+                continue
+
+            pos += 1
+            while pos < len(data) and data[pos] == 0xFF:
+                pos += 1
+            if pos >= len(data):
+                return False, "Truncated marker", False
+
+            marker = data[pos]
+            pos += 1
+
+            if marker == 0xD9:
+                return True, "Found EOI", valid_lengths
+
+            if marker == 0xD8:
+                continue
+            if marker == 0x01 or 0xD0 <= marker <= 0xD7:
+                continue
+
+            if marker == 0xDA:
+                found_sos = True
+                scan_pos = pos
+                while scan_pos < len(data) - 1:
+                    if data[scan_pos] == 0xFF:
+                        if data[scan_pos + 1] == 0x00:
+                            scan_pos += 2
+                            continue
+                        if data[scan_pos + 1] == 0xD9:
+                            return True, "Found EOI after SOS", valid_lengths
+                    scan_pos += 1
+                return False, "Missing EOI after SOS", False
+
+            if pos + 2 > len(data):
+                return False, "Invalid segment length header", False
+            segment_length = int.from_bytes(data[pos:pos + 2], "big")
+            if segment_length < 2 or pos + segment_length > len(data):
+                return False, "Invalid JPEG segment length", False
+            pos += segment_length
+
+        return False, "Missing JPEG EOI", False
+
+
+def get_validator_for_signature(signature: FileSignature) -> FileValidator | None:
+    if signature.name == "jpeg":
+        return JPEGValidator()
+    return None
 
 
 SIGNATURES: tuple[FileSignature, ...] = (
@@ -160,6 +285,7 @@ def open_source_readonly(source: str) -> BinaryIO:
         return open(source, "rb", buffering=BUFFER_SIZE)
     except PermissionError as exc:
         raise PermissionError(f"Could not open {source!r}. Run the terminal as Administrator for live drives.") from exc
+
 
 def _raw_device_drive(source: str) -> str | None:
     normalized = source.replace("/", "\\")
@@ -294,9 +420,11 @@ class SignatureScanner:
         initial_bytes_consumed = 0
         footer_found = False
         tail: deque[int] = deque(maxlen=len(signature.footer or b""))
+        recovered_data = bytearray()
 
         with path.open("xb") as output:
             written, footer_found, initial_bytes_consumed = write_recovery_chunk(output, initial_bytes, tail, signature, written, max_bytes)
+            recovered_data.extend(initial_bytes[: written])
 
             while written < max_bytes and not footer_found:
                 wanted = min(64 * 1024, max_bytes - written)
@@ -306,13 +434,31 @@ class SignatureScanner:
 
                 extra_stream_bytes_read += len(chunk)
                 just_written, footer_found, chunk_bytes_consumed = write_recovery_chunk(output, chunk, tail, signature, written, max_bytes)
+                recovered_data.extend(chunk[: just_written - written])
                 written = just_written
                 if footer_found and chunk_bytes_consumed < len(chunk):
                     unread_tail = len(chunk) - chunk_bytes_consumed
                     source.seek(-unread_tail, os.SEEK_CUR)
                     extra_stream_bytes_read -= unread_tail
 
-        return RecoveryResult(path, written, estimate_confidence(signature, footer_found, written, max_bytes), extra_stream_bytes_read, initial_bytes_consumed)
+        validation_score = 0.0
+        validation_reason = "No validator"
+        validator = get_validator_for_signature(signature)
+        if validator is not None:
+            validation = validator.validate(bytes(recovered_data))
+            validation_score = validation.score
+            validation_reason = validation.reason
+
+        return RecoveryResult(
+            path,
+            written,
+            estimate_confidence(signature, footer_found, written, max_bytes),
+            extra_stream_bytes_read,
+            initial_bytes_consumed,
+            signature.name,
+            validation_score,
+            validation_reason,
+        )
 
 
 def write_recovery_chunk(
@@ -350,7 +496,9 @@ def print_recovery_result(result: RecoveryResult, signature: FileSignature, file
     print(
         f"{result.path.name:<32} {signature.name:<10} "
         f"offset=0x{file_offset:X} confidence={result.confidence_percent}% "
-        f"bytes={result.bytes_written}"
+        f"bytes={result.bytes_written} "
+        f"validation={result.validation_score:.2f} "
+        f"reason={result.validation_reason}"
     )
 
 

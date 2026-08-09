@@ -326,6 +326,42 @@ class RecoveryMvpTest(unittest.TestCase):
         self.assertFalse(recovery_mvp.output_looks_like_source(r"C:/data/disk.img", Path(r"C:/recovered")))
         self.assertTrue(recovery_mvp.output_looks_like_source(r"C:/data/", Path(r"C:/data/recovered")))
 
+    def test_jpeg_validator_accepts_minimal_valid_jpeg(self):
+        validator = recovery_mvp.JPEGValidator()
+        valid_jpeg = (
+            b"\xff\xd8"
+            b"\xff\xe0\x00\x10JFIF\x00\x01\x02\x00\x00\x01\x00\x01\x00\x00"
+            b"\xff\xda\x00\x08\x01\x01\x00\x00?\x00\xff\xd9"
+        )
+        result = validator.validate(valid_jpeg)
+        self.assertTrue(result.valid)
+        self.assertGreaterEqual(result.score, 0.7)
+
+    def test_jpeg_validator_rejects_missing_eoi(self):
+        validator = recovery_mvp.JPEGValidator()
+        invalid_jpeg = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00"
+        result = validator.validate(invalid_jpeg)
+        self.assertFalse(result.valid)
+        self.assertEqual(result.reason, "Missing JPEG EOI")
+
+    def test_jpeg_validator_rejects_bad_segment_lengths(self):
+        validator = recovery_mvp.JPEGValidator()
+        invalid_jpeg = b"\xff\xd8\xff\xe0\x00\x01\xff\xd9"
+        result = validator.validate(invalid_jpeg)
+        self.assertFalse(result.valid)
+        self.assertEqual(result.reason, "Invalid JPEG segment length")
+
+    def test_jpeg_validator_scores_unusual_but_legal_jpeg(self):
+        validator = recovery_mvp.JPEGValidator()
+        unusual_jpeg = (
+            b"\xff\xd8"
+            b"\xff\xdb\x00\x04\x00\x08\xff\xda\x00\x08\x01\x01\x00\x00?\x00"
+            b"\xff\xd9"
+        )
+        result = validator.validate(unusual_jpeg)
+        self.assertTrue(result.valid)
+        self.assertGreaterEqual(result.score, 0.6)
+
     def test_estimate_confidence_with_footer(self):
         self.assertEqual(estimate_confidence(FileSignature("jpeg", ".jpg", b"", b"", 0), True, 100, 1024), 85)
         self.assertEqual(estimate_confidence(FileSignature("zip-office", ".zip", b"", b"", 0), True, 100, 1024), 70)
