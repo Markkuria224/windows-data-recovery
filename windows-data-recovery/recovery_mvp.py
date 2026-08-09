@@ -525,6 +525,12 @@ class SignatureScanner:
         self.max_header_length = max(len(sig.header) for sig in signatures)
         self.min_header_length = min(len(sig.header) for sig in signatures)
         self.header_overlap = max(1, self.max_header_length - 1)
+        self._signature_heads: dict[int, tuple[FileSignature, ...]] = {}
+        for signature in signatures:
+            if signature.header:
+                first_byte = signature.header[0]
+                self._signature_heads.setdefault(first_byte, () )
+                self._signature_heads[first_byte] += (signature,)
 
     def scan(self, source: BinaryIO, output_dir: Path, max_bytes_per_file: int, max_candidates: int, min_bytes: int) -> int:
         carry = b""
@@ -595,7 +601,8 @@ class SignatureScanner:
         return recovered
 
     def _find_header(self, block: bytes, index: int) -> FileSignature | None:
-        for signature in self.signatures:
+        possible_signatures = self._signature_heads.get(block[index], ())
+        for signature in possible_signatures:
             if block.startswith(signature.header, index):
                 return signature
         return None
