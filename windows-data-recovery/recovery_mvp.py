@@ -529,8 +529,10 @@ class SignatureScanner:
         for signature in signatures:
             if signature.header:
                 first_byte = signature.header[0]
-                self._signature_heads.setdefault(first_byte, () )
+                self._signature_heads.setdefault(first_byte, ())
                 self._signature_heads[first_byte] += (signature,)
+        start_bytes = bytes(sorted(self._signature_heads.keys()))
+        self._header_start_re = re.compile(b"[" + re.escape(start_bytes) + b"]") if start_bytes else None
 
     def scan(self, source: BinaryIO, output_dir: Path, max_bytes_per_file: int, max_candidates: int, min_bytes: int) -> int:
         carry = b""
@@ -549,7 +551,17 @@ class SignatureScanner:
             scan_limit = max(0, len(block) - self.min_header_length)
 
             while index <= scan_limit:
-                signature = self._find_header(block, index)
+                if self._header_start_re is not None:
+                    match = self._header_start_re.search(block, index, scan_limit + 1)
+                    if match is None:
+                        break
+                    index = match.start()
+                possible_signatures = self._signature_heads.get(block[index], ())
+                signature = None
+                for candidate in possible_signatures:
+                    if block.startswith(candidate.header, index):
+                        signature = candidate
+                        break
                 if signature is None:
                     index += 1
                     continue
