@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import ctypes
 import os
+import re
 import string
 import sys
 from collections import deque
@@ -160,22 +161,37 @@ def open_source_readonly(source: str) -> BinaryIO:
     except PermissionError as exc:
         raise PermissionError(f"Could not open {source!r}. Run the terminal as Administrator for live drives.") from exc
 
+def _raw_device_drive(source: str) -> str | None:
+    normalized = source.replace("/", "\\")
+    match = re.match(r"^\\+\\\.\\+([A-Za-z]):", normalized)
+    if match:
+        return f"{match.group(1).upper()}:"
+    return None
+
 
 def output_looks_like_source(source: str, output_dir: Path) -> bool:
-    output_drive = output_dir.resolve().drive.upper()
+    output_path = output_dir.resolve(strict=False)
+    output_drive = output_path.drive.upper()
     if not output_drive:
         return False
 
-    if source.lower().startswith("\\\\.\\"):
-        normalized = source.replace("/", "\\")
-        if len(normalized) >= 6 and normalized[4].isalpha():
-            return f"{normalized[4].upper()}:" == output_drive
-        return False
+    raw_drive = _raw_device_drive(source)
+    if raw_drive is not None:
+        return output_drive == raw_drive
 
     try:
-        source_path = Path(source).resolve()
-        output_path = output_dir.resolve()
-        return source_path == output_path or source_path in output_path.parents
+        source_path = Path(source).resolve(strict=False)
+        source_is_dir = source_path.exists() and source_path.is_dir()
+        if not source_is_dir and source.endswith(("\\", "/")):
+            source_is_dir = True
+
+        if source_path == output_path:
+            return True
+
+        if source_is_dir:
+            return output_path in source_path.parents or source_path in output_path.parents
+
+        return output_path == source_path.parent
     except OSError:
         return False
 
@@ -184,6 +200,9 @@ class SignatureScanner:
     def __init__(self, signatures: tuple[FileSignature, ...]) -> None:
         self.signatures = signatures
         self.max_signature_length = max(max(len(sig.header), len(sig.footer or b"")) for sig in signatures)
+        self.max_header_length = max(len(sig.header) for sig in signatures)
+        self.min_header_length = min(len(sig.header) for sig in signatures)
+        self.header_overlap = max(1, self.max_header_length - 1)
 
     def scan(self, source: BinaryIO, output_dir: Path, max_bytes_per_file: int, max_candidates: int, min_bytes: int) -> int:
         carry = b""
@@ -199,7 +218,7 @@ class SignatureScanner:
             block = carry + chunk
             recovered_from_block = False
             index = 0
-            scan_limit = max(0, len(block) - self.max_signature_length)
+            scan_limit = max(0, len(block) - self.min_header_length)
 
             while index <= scan_limit:
                 signature = self._find_header(block, index)
@@ -220,6 +239,11 @@ class SignatureScanner:
                 result = self._recover_candidate(source, block[index:], signature, output_dir, file_offset, limit, recovered + 1)
                 if min_bytes and result.bytes_written < min_bytes:
                     result.path.unlink(missing_ok=True)
+                    if result.extra_stream_bytes_read:
+                        absolute_offset += len(chunk) + result.extra_stream_bytes_read
+                        carry = b""
+                        recovered_from_block = True
+                        break
                     index += max(1, result.initial_bytes_consumed)
                     continue
 
@@ -243,7 +267,7 @@ class SignatureScanner:
             if recovered_from_block:
                 continue
 
-            carry = block[-self.max_signature_length :]
+            carry = block[-self.header_overlap :]
             absolute_offset += len(chunk)
 
         return recovered
@@ -281,8 +305,12 @@ class SignatureScanner:
                     break
 
                 extra_stream_bytes_read += len(chunk)
-                just_written, footer_found, _ = write_recovery_chunk(output, chunk, tail, signature, written, max_bytes)
+                just_written, footer_found, chunk_bytes_consumed = write_recovery_chunk(output, chunk, tail, signature, written, max_bytes)
                 written = just_written
+                if footer_found and chunk_bytes_consumed < len(chunk):
+                    unread_tail = len(chunk) - chunk_bytes_consumed
+                    source.seek(-unread_tail, os.SEEK_CUR)
+                    extra_stream_bytes_read -= unread_tail
 
         return RecoveryResult(path, written, estimate_confidence(signature, footer_found, written, max_bytes), extra_stream_bytes_read, initial_bytes_consumed)
 
