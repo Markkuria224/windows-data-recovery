@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="SENTINEL is a lightweight SOC dashboard for monitoring suspicious authentication activity, triaging alerts, and tracking analyst investigation workflow." />
+    <title>SENTINEL Dashboard</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <span class="brand-mark">S</span>
+          <div>
+            <h1>SENTINEL</h1>
+            <small>Mini SOC</small>
+          </div>
+        </div>
+
+        <nav class="nav">
+          <a href="#" class="active">Overview</a>
+          <a href="#">Alerts</a>
+          <a href="#">Threat Intel</a>
+          <a href="#">Reports</a>
+        </nav>
+      </aside>
+
+      <main class="main-content">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">Security Operations</p>
+            <h2>Threat Overview</h2>
+            <p class="tool-description">A lightweight SOC dashboard for monitoring suspicious authentication activity, prioritising incidents, and tracking analyst investigation workflow.</p>
+          </div>
+          <div class="topbar-actions">
+            <div id="live-mode-indicator" class="live-indicator off">
+              <span class="live-dot"></span>
+              Live Mode: OFF
+            </div>
+            <button id="start-live-mode" class="primary-btn">Start Live Mode</button>
+            <button id="stop-live-mode" class="secondary-btn hidden">Stop</button>
+          </div>
+        </header>
+
+        <section class="stats-grid">
+          <article class="stat-card">
+            <span>Total events</span>
+            <strong id="total-events">0</strong>
+          </article>
+          <article class="stat-card success">
+            <span>Successful logins</span>
+            <strong id="successful-logins">0</strong>
+          </article>
+          <article class="stat-card danger">
+            <span>Failed logins</span>
+            <strong id="failed-logins">0</strong>
+          </article>
+          <article class="stat-card warning">
+            <span>Suspicious IPs</span>
+            <strong id="suspicious-ips">0</strong>
+          </article>
+        </section>
+
+        <section class="chart-grid">
+          <article class="panel">
+            <div class="panel-header">
+              <h3>Event trend</h3>
+            </div>
+            <canvas id="eventTrendChart"></canvas>
+          </article>
+          <article class="panel">
+            <div class="panel-header">
+              <h3>Severity distribution</h3>
+            </div>
+            <canvas id="severityChart"></canvas>
+          </article>
+        </section>
+
+        <section class="panel filter-panel">
+          <div class="panel-header">
+            <h3>Filter alerts</h3>
+          </div>
+          <div class="filter-grid">
+            <div class="filter-group">
+              <label>Severity</label>
+              <div class="checkbox-group multi-select">
+                <label><input type="checkbox" name="severity-filter" value="LOW" /> Low</label>
+                <label><input type="checkbox" name="severity-filter" value="MEDIUM" /> Medium</label>
+                <label><input type="checkbox" name="severity-filter" value="HIGH" /> High</label>
+              </div>
+            </div>
+
+            <div class="filter-group">
+              <label>Status</label>
+              <div class="checkbox-group multi-select">
+                <label><input type="checkbox" name="status-filter" value="Open" /> Open</label>
+                <label><input type="checkbox" name="status-filter" value="Investigating" /> Investigating</label>
+                <label><input type="checkbox" name="status-filter" value="Resolved" /> Resolved</label>
+                <label><input type="checkbox" name="status-filter" value="False Positive" /> False Positive</label>
+              </div>
+            </div>
+
+            <div class="filter-group">
+              <label>From</label>
+              <input id="filter-date-from" type="date" />
+            </div>
+
+            <div class="filter-group">
+              <label>To</label>
+              <input id="filter-date-to" type="date" />
+            </div>
+
+            <div class="filter-group wide">
+              <label>Source IP</label>
+              <input id="filter-source-ip" type="text" placeholder="e.g. 203.0.113.8" />
+            </div>
+          </div>
+
+          <div class="filter-actions">
+            <button id="apply-filters" type="button" class="primary-btn">Apply filters</button>
+            <button id="clear-filters" type="button" class="secondary-btn">Reset</button>
+          </div>
+          <div id="active-filter-summary" class="active-filter-summary hidden"></div>
+        </section>
+
+        <section class="panel alert-panel">
+          <div class="panel-header">
+            <h3>Recent alerts</h3>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Time</th>
+                  <th>Source IP</th>
+                  <th>Severity</th>
+                  <th>Reason</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody id="alerts-table-body">
+                {% if alerts %}
+                  {% for alert in alerts %}
+                    <tr class="alert-row">
+                      <td>{{ alert.timestamp }}</td>
+                      <td>
+                        <div class="cell-ip">{{ alert.source_ip }}</div>
+                        <small>{{ alert.source_host }}</small>
+                      </td>
+                      <td>
+                        <span class="severity severity-{{ alert.severity|lower }}">{{ alert.severity }}</span>
+                      </td>
+                      <td>
+                        <div class="alert-reason">{{ alert.reason }}</div>
+                        <div class="alert-meta">
+                          <span>{{ alert.event_type }}</span>
+                          <span>{{ alert.updated_at }}</span>
+                        </div>
+                      </td>
+                      <td>
+                        <select class="status-select" data-alert-id="{{ alert.id }}">
+                          <option value="Open" {% if alert.status == 'Open' %}selected{% endif %}>Open</option>
+                          <option value="Investigating" {% if alert.status == 'Investigating' %}selected{% endif %}>Investigating</option>
+                          <option value="Resolved" {% if alert.status == 'Resolved' %}selected{% endif %}>Resolved</option>
+                          <option value="False Positive" {% if alert.status == 'False Positive' %}selected{% endif %}>False Positive</option>
+                        </select>
+                      </td>
+                    </tr>
+                    <tr class="activity-row">
+                      <td colspan="5">
+                        <div class="alert-activity">
+                          <div class="note-box">
+                            <h4>Investigation notes</h4>
+                            <form class="note-form" data-alert-id="{{ alert.id }}">
+                              <textarea name="note" placeholder="Add analyst note..." rows="2"></textarea>
+                              <button type="submit">Add note</button>
+                            </form>
+                          </div>
+
+                          <div class="timeline-box">
+                            <h4>Activity timeline</h4>
+                            <div class="timeline">
+                              {% if alert.history %}
+                                {% for item in alert.history %}
+                                  <div class="timeline-item">
+                                    <span class="timeline-badge status">{{ item.new_status }}</span>
+                                    <div>
+                                      <strong>Status changed</strong>
+                                      <small>{{ item.changed_at }}</small>
+                                    </div>
+                                  </div>
+                                {% endfor %}
+                              {% endif %}
+
+                              {% if alert.notes %}
+                                {% for note in alert.notes %}
+                                  <div class="timeline-item note-item">
+                                    <span class="timeline-badge note">Note</span>
+                                    <div>
+                                      <strong>{{ note.note_text }}</strong>
+                                      <small>{{ note.created_at }}</small>
+                                    </div>
+                                  </div>
+                                {% endfor %}
+                              {% else %}
+                                <div class="timeline-item empty-item">
+                                  <span class="timeline-badge neutral">No activity</span>
+                                  <div>
+                                    <strong>No notes or status changes yet.</strong>
+                                  </div>
+                                </div>
+                              {% endif %}
+                            </div>
+                          </div>
+                        </div>
+                      </td>
+                    </tr>
+                  {% endfor %}
+                {% else %}
+                  <tr>
+                    <td colspan="5" class="empty-state">No alerts loaded yet.</td>
+                  </tr>
+                {% endif %}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script src="{{ url_for('static', filename='script.js') }}"></script>
+  </body>
+</html>
