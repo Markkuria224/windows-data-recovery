@@ -7,14 +7,52 @@ document.addEventListener('DOMContentLoaded', () => {
   const startButton = document.getElementById('start-live-mode');
   const stopButton = document.getElementById('stop-live-mode');
   const alertsTableBody = document.getElementById('alerts-table-body');
+  const windowsEventsBody = document.getElementById('windows-events-body');
+  const windowsCollectionStatus = document.getElementById('windows-collection-status');
+  const windowsRefreshButton = document.getElementById('refresh-windows-events');
+  const windowsPollInterval = document.getElementById('windows-poll-interval');
+  const csvImportForm = document.getElementById('csv-import-form');
+  const csvImportStatus = document.getElementById('csv-import-status');
+  const csvImportButton = document.getElementById('csv-import-submit');
+  const navLinks = [...document.querySelectorAll('.nav [data-view-target]')];
+  const views = [...document.querySelectorAll('[data-view]')];
+  const viewIds = new Set(views.map((view) => view.id));
 
   let liveIntervalId = null;
+  let windowsPollIntervalId = null;
+  let windowsCollectionAvailable = false;
+
+  const updateNavigation = () => {
+    let activeViewId = window.location.hash.slice(1).toLowerCase();
+    if (!viewIds.has(activeViewId)) {
+      activeViewId = 'overview';
+      window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}#overview`);
+    }
+
+    views.forEach((view) => {
+      view.hidden = view.id !== activeViewId;
+    });
+    navLinks.forEach((link) => {
+      const isActive = link.dataset.viewTarget === activeViewId;
+      link.classList.toggle('active', isActive);
+      if (isActive) {
+        link.setAttribute('aria-current', 'page');
+      } else {
+        link.removeAttribute('aria-current');
+      }
+    });
+  };
+
+  window.addEventListener('hashchange', updateNavigation);
+  updateNavigation();
 
   const setLiveState = (isOn) => {
     if (!liveIndicator) return;
     liveIndicator.classList.toggle('on', isOn);
     liveIndicator.classList.toggle('off', !isOn);
-    liveIndicator.innerHTML = `<span class="live-dot"></span>${isOn ? 'Live Mode: ON' : 'Live Mode: OFF'}`;
+    const liveDot = document.createElement('span');
+    liveDot.className = 'live-dot';
+    liveIndicator.replaceChildren(liveDot, document.createTextNode(isOn ? 'Live Mode: ON' : 'Live Mode: OFF'));
 
     if (startButton) {
       startButton.classList.toggle('hidden', isOn);
@@ -155,93 +193,156 @@ document.addEventListener('DOMContentLoaded', () => {
 
   const renderAlertTable = (alerts) => {
     if (!alertsTableBody) return;
+    alertsTableBody.replaceChildren();
 
     if (!alerts.length) {
-      alertsTableBody.innerHTML = '<tr><td colspan="5" class="empty-state">No alerts match the selected filters.</td></tr>';
+      const row = document.createElement('tr');
+      const cell = document.createElement('td');
+      cell.colSpan = 5;
+      cell.className = 'empty-state';
+      cell.textContent = 'No alerts match the selected filters.';
+      row.append(cell);
+      alertsTableBody.append(row);
       return;
     }
 
-    alertsTableBody.innerHTML = alerts.map((alert) => {
+    alerts.forEach((alert) => {
       const history = Array.isArray(alert.history) ? alert.history : [];
       const notes = Array.isArray(alert.notes) ? alert.notes : [];
-      const timelineHtml = history.length || notes.length
-        ? [
-            ...history.map((item) => `
-              <div class="timeline-item">
-                <span class="timeline-badge status">${item.new_status}</span>
-                <div>
-                  <strong>Status changed</strong>
-                  <small>${item.changed_at}</small>
-                </div>
-              </div>
-            `),
-            ...notes.map((note) => `
-              <div class="timeline-item note-item">
-                <span class="timeline-badge note">Note</span>
-                <div>
-                  <strong>${note.note_text}</strong>
-                  <small>${note.created_at}</small>
-                </div>
-              </div>
-            `),
-          ].join('')
-        : `
-          <div class="timeline-item empty-item">
-            <span class="timeline-badge neutral">No activity</span>
-            <div>
-              <strong>No notes or status changes yet.</strong>
-            </div>
-          </div>
-        `;
+      const alertRow = document.createElement('tr');
+      alertRow.className = 'alert-row';
+      const timestampCell = document.createElement('td');
+      timestampCell.textContent = alert.timestamp || '';
+      alertRow.append(timestampCell);
 
-      return `
-        <tr class="alert-row">
-          <td>${alert.timestamp}</td>
-          <td>
-            <div class="cell-ip">${alert.source_ip}</div>
-            <small>${alert.source_host || 'unknown'}</small>
-          </td>
-          <td>
-            <span class="severity severity-${String(alert.severity || 'LOW').toLowerCase()}">${alert.severity || 'LOW'}</span>
-          </td>
-          <td>
-            <div class="alert-reason">${alert.reason}</div>
-            <div class="alert-meta">
-              <span>${alert.event_type || 'event'}</span>
-              <span>${alert.updated_at || alert.created_at}</span>
-            </div>
-          </td>
-          <td>
-            <select class="status-select" data-alert-id="${alert.id}">
-              <option value="Open" ${alert.status === 'Open' ? 'selected' : ''}>Open</option>
-              <option value="Investigating" ${alert.status === 'Investigating' ? 'selected' : ''}>Investigating</option>
-              <option value="Resolved" ${alert.status === 'Resolved' ? 'selected' : ''}>Resolved</option>
-              <option value="False Positive" ${alert.status === 'False Positive' ? 'selected' : ''}>False Positive</option>
-            </select>
-          </td>
-        </tr>
-        <tr class="activity-row">
-          <td colspan="5">
-            <div class="alert-activity">
-              <div class="note-box">
-                <h4>Investigation notes</h4>
-                <form class="note-form" data-alert-id="${alert.id}">
-                  <textarea name="note" placeholder="Add analyst note..." rows="2"></textarea>
-                  <button type="submit">Add note</button>
-                </form>
-              </div>
+      const sourceCell = document.createElement('td');
+      const sourceIp = document.createElement('div');
+      sourceIp.className = 'cell-ip';
+      sourceIp.textContent = alert.source_ip || 'unknown';
+      const sourceHost = document.createElement('small');
+      sourceHost.textContent = alert.source_host || 'unknown';
+      sourceCell.append(sourceIp, sourceHost);
+      alertRow.append(sourceCell);
 
-              <div class="timeline-box">
-                <h4>Activity timeline</h4>
-                <div class="timeline">
-                  ${timelineHtml}
-                </div>
-              </div>
-            </div>
-          </td>
-        </tr>
-      `;
-    }).join('');
+      const severityCell = document.createElement('td');
+      const severity = ['LOW', 'MEDIUM', 'HIGH'].includes(String(alert.severity).toUpperCase())
+        ? String(alert.severity).toUpperCase()
+        : 'LOW';
+      const severityBadge = document.createElement('span');
+      severityBadge.className = `severity severity-${severity.toLowerCase()}`;
+      severityBadge.textContent = severity;
+      severityCell.append(severityBadge);
+      alertRow.append(severityCell);
+
+      const reasonCell = document.createElement('td');
+      const reason = document.createElement('div');
+      reason.className = 'alert-reason';
+      reason.textContent = alert.reason || '';
+      const metadata = document.createElement('div');
+      metadata.className = 'alert-meta';
+      const eventType = document.createElement('span');
+      eventType.textContent = alert.event_type || 'event';
+      const updatedAt = document.createElement('span');
+      updatedAt.textContent = alert.updated_at || alert.created_at || '';
+      metadata.append(eventType, updatedAt);
+      reasonCell.append(reason, metadata);
+      alertRow.append(reasonCell);
+
+      const statusCell = document.createElement('td');
+      const statusSelect = document.createElement('select');
+      statusSelect.className = 'status-select';
+      statusSelect.dataset.alertId = Number.isSafeInteger(alert.id) ? String(alert.id) : '';
+      const allowedStatuses = ['Open', 'Investigating', 'Resolved', 'False Positive'];
+      const currentStatus = allowedStatuses.includes(alert.status) ? alert.status : 'Open';
+      allowedStatuses.forEach((status) => {
+        const option = document.createElement('option');
+        option.value = status;
+        option.textContent = status;
+        option.selected = status === currentStatus;
+        statusSelect.append(option);
+      });
+      statusCell.append(statusSelect);
+      alertRow.append(statusCell);
+
+      const activityRow = document.createElement('tr');
+      activityRow.className = 'activity-row';
+      const activityCell = document.createElement('td');
+      activityCell.colSpan = 5;
+      const activity = document.createElement('div');
+      activity.className = 'alert-activity';
+
+      const noteBox = document.createElement('div');
+      noteBox.className = 'note-box';
+      const noteHeading = document.createElement('h4');
+      noteHeading.textContent = 'Investigation notes';
+      const noteForm = document.createElement('form');
+      noteForm.className = 'note-form';
+      noteForm.dataset.alertId = statusSelect.dataset.alertId;
+      const noteInput = document.createElement('textarea');
+      noteInput.name = 'note';
+      noteInput.placeholder = 'Add analyst note...';
+      noteInput.rows = 2;
+      const noteButton = document.createElement('button');
+      noteButton.type = 'submit';
+      noteButton.textContent = 'Add note';
+      noteForm.append(noteInput, noteButton);
+      noteBox.append(noteHeading, noteForm);
+
+      const timelineBox = document.createElement('div');
+      timelineBox.className = 'timeline-box';
+      const timelineHeading = document.createElement('h4');
+      timelineHeading.textContent = 'Activity timeline';
+      const timeline = document.createElement('div');
+      timeline.className = 'timeline';
+      history.forEach((item) => {
+        const timelineItem = document.createElement('div');
+        timelineItem.className = 'timeline-item';
+        const badge = document.createElement('span');
+        badge.className = 'timeline-badge status';
+        badge.textContent = item.new_status || '';
+        const details = document.createElement('div');
+        const title = document.createElement('strong');
+        title.textContent = 'Status changed';
+        const changedAt = document.createElement('small');
+        changedAt.textContent = item.changed_at || '';
+        details.append(title, changedAt);
+        timelineItem.append(badge, details);
+        timeline.append(timelineItem);
+      });
+      notes.forEach((note) => {
+        const timelineItem = document.createElement('div');
+        timelineItem.className = 'timeline-item note-item';
+        const badge = document.createElement('span');
+        badge.className = 'timeline-badge note';
+        badge.textContent = 'Note';
+        const details = document.createElement('div');
+        const noteText = document.createElement('strong');
+        noteText.textContent = note.note_text || '';
+        const createdAt = document.createElement('small');
+        createdAt.textContent = note.created_at || '';
+        details.append(noteText, createdAt);
+        timelineItem.append(badge, details);
+        timeline.append(timelineItem);
+      });
+      if (!history.length && !notes.length) {
+        const emptyItem = document.createElement('div');
+        emptyItem.className = 'timeline-item empty-item';
+        const badge = document.createElement('span');
+        badge.className = 'timeline-badge neutral';
+        badge.textContent = 'No activity';
+        const details = document.createElement('div');
+        const message = document.createElement('strong');
+        message.textContent = 'No notes or status changes yet.';
+        details.append(message);
+        emptyItem.append(badge, details);
+        timeline.append(emptyItem);
+      }
+      timelineBox.append(timelineHeading, timeline);
+      activity.append(noteBox, timelineBox);
+      activityCell.append(activity);
+      activityRow.append(activityCell);
+      alertsTableBody.append(alertRow, activityRow);
+    });
   };
 
   const buildFilterQuery = () => {
@@ -275,6 +376,123 @@ document.addEventListener('DOMContentLoaded', () => {
     return queryString ? `?${queryString}` : '';
   };
 
+  const buildWindowsFilterQuery = () => {
+    const params = new URLSearchParams();
+    const eventId = document.getElementById('windows-filter-event-id')?.value;
+    const severity = document.getElementById('windows-filter-severity')?.value;
+    const start = document.getElementById('windows-filter-start')?.value;
+    const end = document.getElementById('windows-filter-end')?.value;
+    if (eventId) params.set('event_id', eventId);
+    if (severity) params.set('severity', severity);
+    if (start) params.set('start', new Date(start).toISOString());
+    if (end) params.set('end', new Date(end).toISOString());
+    const query = params.toString();
+    return query ? `?${query}` : '';
+  };
+
+  const renderWindowsEvents = (events) => {
+    if (!windowsEventsBody) return;
+    windowsEventsBody.replaceChildren();
+    if (!events.length) {
+      const row = document.createElement('tr');
+      const cell = document.createElement('td');
+      cell.colSpan = 8;
+      cell.className = 'empty-state';
+      cell.textContent = 'No Windows events match these filters.';
+      row.append(cell);
+      windowsEventsBody.append(row);
+      return;
+    }
+
+    events.forEach((event) => {
+      const row = document.createElement('tr');
+      const values = [
+        event.timestamp || '',
+        event.event_id ?? '',
+        event.severity || 'LOW',
+        event.username || 'unknown',
+        event.computer_name || 'unknown',
+        event.source_ip || '—',
+        event.logon_type || '—',
+        event.description || 'No description available.',
+      ];
+      values.forEach((value, index) => {
+        const cell = document.createElement('td');
+        cell.textContent = String(value);
+        if (index === 2) {
+          const severity = ['LOW', 'MEDIUM', 'HIGH'].includes(String(value).toUpperCase())
+            ? String(value).toUpperCase()
+            : 'LOW';
+          const badge = document.createElement('span');
+          badge.className = `severity severity-${severity.toLowerCase()}`;
+          badge.textContent = severity;
+          cell.replaceChildren(badge);
+        } else if (index === 7) {
+          cell.className = 'windows-event-description';
+        }
+        row.append(cell);
+      });
+      windowsEventsBody.append(row);
+    });
+  };
+
+  const setWindowsCollectionStatus = (state, message) => {
+    if (!windowsCollectionStatus) return;
+    windowsCollectionStatus.dataset.state = state || 'idle';
+    windowsCollectionStatus.textContent = message || '';
+  };
+
+  const loadWindowsEvents = async (collect = false) => {
+    if (collect && windowsRefreshButton) windowsRefreshButton.disabled = true;
+    if (collect) setWindowsCollectionStatus('running', 'Reading the local Windows Security log...');
+
+    try {
+      if (collect) {
+        const collectionResponse = await fetch('/api/windows-events/collect', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ lookback_hours: 24, max_events: 500 }),
+        });
+        const collection = await collectionResponse.json();
+        if (!collectionResponse.ok) {
+          setWindowsCollectionStatus(collection.status, collection.message || 'Windows event collection failed.');
+        } else {
+          setWindowsCollectionStatus(collection.status, collection.message);
+        }
+      }
+
+      const response = await fetch(`/api/windows-events${buildWindowsFilterQuery()}`);
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Unable to load Windows events.');
+      renderWindowsEvents(data.events || []);
+      windowsCollectionAvailable = Boolean(data.collection.available);
+      if (!collect || data.collection.status === 'unavailable') {
+        setWindowsCollectionStatus(data.collection.status, data.collection.message);
+      }
+      if (windowsRefreshButton) windowsRefreshButton.disabled = !data.collection.available;
+      configureWindowsPolling();
+    } catch (error) {
+      setWindowsCollectionStatus('error', error.message || 'Windows event collection failed.');
+      if (windowsRefreshButton) windowsRefreshButton.disabled = false;
+    } finally {
+      if (collect && windowsRefreshButton && !windowsRefreshButton.disabled) {
+        windowsRefreshButton.disabled = false;
+      }
+    }
+  };
+
+  const configureWindowsPolling = () => {
+    if (windowsPollIntervalId) {
+      clearInterval(windowsPollIntervalId);
+      windowsPollIntervalId = null;
+    }
+    const minutes = Number(windowsPollInterval?.value || 0);
+    const permissionDenied = windowsCollectionStatus?.dataset.state === 'permission_denied';
+    if (windowsCollectionAvailable && !permissionDenied && minutes > 0) {
+      windowsPollIntervalId = setInterval(() => loadWindowsEvents(true), minutes * 60 * 1000);
+    }
+  };
+
   const renderActiveFilterSummary = () => {
     const summary = document.getElementById('active-filter-summary');
     if (!summary) return;
@@ -305,12 +523,20 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (!chips.length) {
       summary.classList.remove('hidden');
-      summary.innerHTML = '<span class="filter-chip empty">No filters active</span>';
+      const chip = document.createElement('span');
+      chip.className = 'filter-chip empty';
+      chip.textContent = 'No filters active';
+      summary.replaceChildren(chip);
       return;
     }
 
     summary.classList.remove('hidden');
-    summary.innerHTML = chips.map((chip) => `<span class="filter-chip">${chip}</span>`).join('');
+    summary.replaceChildren(...chips.map((text) => {
+      const chip = document.createElement('span');
+      chip.className = 'filter-chip';
+      chip.textContent = text;
+      return chip;
+    }));
   };
 
   const fetchDashboard = async () => {
@@ -404,6 +630,12 @@ document.addEventListener('DOMContentLoaded', () => {
   if (stopButton) {
     stopButton.addEventListener('click', stopLiveMode);
   }
+
+  windowsRefreshButton?.addEventListener('click', () => loadWindowsEvents(true));
+  windowsPollInterval?.addEventListener('change', configureWindowsPolling);
+  ['windows-filter-event-id', 'windows-filter-severity', 'windows-filter-start', 'windows-filter-end'].forEach((id) => {
+    document.getElementById(id)?.addEventListener('change', () => loadWindowsEvents(false));
+  });
 
   document.querySelectorAll('input[name="severity-filter"]').forEach((checkbox) => {
       checkbox.addEventListener('change', () => {
@@ -518,5 +750,31 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
+  csvImportForm?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    if (csvImportButton) csvImportButton.disabled = true;
+    if (csvImportStatus) csvImportStatus.textContent = 'Validating and importing CSV logs...';
+
+    try {
+      const response = await fetch('/api/csv/import', {
+        method: 'POST',
+        body: new FormData(csvImportForm),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'CSV import failed.');
+      if (csvImportStatus) {
+        csvImportStatus.textContent = `Imported ${result.events_imported} events; ${result.duplicates} duplicates skipped; ${result.alerts_created} new alerts created.`;
+      }
+      csvImportForm.reset();
+      await fetchDashboard();
+    } catch (error) {
+      if (csvImportStatus) csvImportStatus.textContent = error.message || 'CSV import failed.';
+    } finally {
+      if (csvImportButton) csvImportButton.disabled = false;
+    }
+  });
+
   fetchDashboard();
+  loadWindowsEvents(false);
+  configureWindowsPolling();
 });

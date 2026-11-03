@@ -86,6 +86,33 @@ body {
   border-color: var(--border);
 }
 
+.view-section[hidden] {
+  display: none;
+}
+
+.view-heading {
+  margin-bottom: 24px;
+}
+
+.view-heading h2 {
+  margin: 0;
+  font-size: 1.5rem;
+}
+
+.section-empty-state {
+  max-width: 760px;
+}
+
+.section-empty-state h3 {
+  margin: 0 0 8px;
+}
+
+.section-empty-state p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
 .main-content {
   flex: 1;
   padding: 32px;
@@ -287,6 +314,104 @@ th {
 
 .filter-panel {
   margin-bottom: 24px;
+}
+
+.windows-events-panel {
+  margin-bottom: 24px;
+}
+
+.windows-events-header {
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.section-description {
+  margin: 6px 0 0;
+  max-width: 700px;
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
+.windows-collection-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.polling-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.windows-collection-status {
+  margin: 0 0 16px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--muted);
+  background: rgba(9, 17, 21, 0.55);
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
+.windows-collection-status[data-state="success"] {
+  color: var(--green);
+}
+
+.windows-collection-status[data-state="permission_denied"],
+.windows-collection-status[data-state="error"] {
+  color: var(--red);
+}
+
+.windows-collection-status[data-state="unavailable"] {
+  color: var(--amber);
+}
+
+.windows-filter-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 14px;
+  margin-bottom: 16px;
+}
+
+.windows-filter-grid input,
+.windows-filter-grid select,
+.polling-control select {
+  width: 100%;
+  min-width: 0;
+  background: rgba(9, 17, 21, 0.9);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  padding: 9px 10px;
+}
+
+.windows-table-wrap {
+  overflow-x: auto;
+}
+
+.windows-events-table {
+  min-width: 1040px;
+}
+
+.windows-events-table td {
+  vertical-align: top;
+}
+
+.windows-event-description {
+  max-width: 360px;
+  white-space: normal;
+  line-height: 1.45;
+}
+
+.windows-events-table .severity {
+  white-space: nowrap;
 }
 
 .filter-grid {
@@ -572,5 +697,13 @@ th {
 
   .alert-activity {
     grid-template-columns: 1fr;
+  }
+
+  .windows-events-header {
+    flex-direction: column;
+  }
+
+  .windows-collection-actions {
+    justify-content: flex-start;
   }
 }

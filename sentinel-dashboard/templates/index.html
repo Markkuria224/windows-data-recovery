@@ -22,16 +22,18 @@
           </div>
         </div>
 
-        <nav class="nav">
-          <a href="#" class="active">Overview</a>
-          <a href="#">Alerts</a>
-          <a href="#">Threat Intel</a>
-          <a href="#">Reports</a>
+        <nav class="nav" aria-label="Dashboard sections">
+          <a href="#overview" class="active" data-view-target="overview" aria-current="page">Overview</a>
+          <a href="#alerts" data-view-target="alerts">Alerts</a>
+          <a href="#threats" data-view-target="threats">Threats</a>
+          <a href="#intel" data-view-target="intel">Intel</a>
+          <a href="#reports" data-view-target="reports">Reports</a>
         </nav>
       </aside>
 
       <main class="main-content">
-        <header class="topbar">
+        <div class="view-section" id="overview" data-view tabindex="-1">
+          <header class="topbar">
           <div>
             <p class="eyebrow">Security Operations</p>
             <h2>Threat Overview</h2>
@@ -45,7 +47,7 @@
             <button id="start-live-mode" class="primary-btn">Start Live Mode</button>
             <button id="stop-live-mode" class="secondary-btn hidden">Stop</button>
           </div>
-        </header>
+          </header>
 
         <section class="stats-grid">
           <article class="stat-card">
@@ -69,7 +71,10 @@
         <section class="chart-grid">
           <article class="panel">
             <div class="panel-header">
-              <h3>Event trend</h3>
+              <div>
+                <h3>Event trend</h3>
+                <p class="section-description">Daily stored-event counts for today and the previous six UTC dates.</p>
+              </div>
             </div>
             <canvas id="eventTrendChart"></canvas>
           </article>
@@ -81,7 +86,118 @@
           </article>
         </section>
 
-        <section class="panel filter-panel">
+        <section class="panel csv-import-panel">
+          <div class="panel-header">
+            <div>
+              <h3>Import CSV logs</h3>
+              <p class="section-description">Validated login records, up to 2 MiB and 10,000 rows.</p>
+            </div>
+          </div>
+          <form id="csv-import-form" enctype="multipart/form-data">
+            <label for="csv-import-file">CSV file</label>
+            <input id="csv-import-file" name="file" type="file" accept=".csv,text/csv" required />
+            <button id="csv-import-submit" type="submit" class="primary-btn">Import logs</button>
+          </form>
+          <div id="csv-import-status" class="windows-collection-status" role="status" aria-live="polite"></div>
+        </section>
+        </div>
+
+        <section class="view-section" id="threats" data-view tabindex="-1" hidden>
+          <header class="view-heading"><h2>Threats</h2></header>
+          <section class="panel windows-events-panel">
+          <div class="panel-header windows-events-header">
+            <div>
+              <h3>Windows Security Events</h3>
+              <p class="section-description">Read-only collection from this Windows machine. Security log access may require an elevated session.</p>
+            </div>
+            <div class="windows-collection-actions">
+              <label class="polling-control" for="windows-poll-interval">
+                Poll every
+                <select id="windows-poll-interval" aria-label="Windows event polling interval">
+                  <option value="0">Off</option>
+                  <option value="1">1 min</option>
+                  <option value="5" selected>5 min</option>
+                  <option value="15">15 min</option>
+                  <option value="30">30 min</option>
+                </select>
+              </label>
+              <button id="refresh-windows-events" type="button" class="primary-btn">Collect now</button>
+            </div>
+          </div>
+          <div id="windows-collection-status" class="windows-collection-status" role="status" aria-live="polite">Checking Windows event collection availability...</div>
+
+          <div class="windows-filter-grid">
+            <div class="filter-group">
+              <label for="windows-filter-event-id">Event ID</label>
+              <select id="windows-filter-event-id">
+                <option value="">All supported IDs</option>
+                <option value="4624">4624 · Successful logon</option>
+                <option value="4625">4625 · Failed logon</option>
+                <option value="4634">4634 · Logoff</option>
+                <option value="4648">4648 · Explicit credentials</option>
+                <option value="4672">4672 · Special privileges</option>
+              </select>
+            </div>
+            <div class="filter-group">
+              <label for="windows-filter-start">From</label>
+              <input id="windows-filter-start" type="datetime-local" />
+            </div>
+            <div class="filter-group">
+              <label for="windows-filter-end">To</label>
+              <input id="windows-filter-end" type="datetime-local" />
+            </div>
+            <div class="filter-group">
+              <label for="windows-filter-severity">Severity</label>
+              <select id="windows-filter-severity">
+                <option value="">All severities</option>
+                <option value="LOW">Low</option>
+                <option value="MEDIUM">Medium</option>
+                <option value="HIGH">High</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="windows-table-wrap">
+            <table class="windows-events-table">
+              <thead>
+                <tr>
+                  <th>Time</th>
+                  <th>Event ID</th>
+                  <th>Severity</th>
+                  <th>Username</th>
+                  <th>Computer</th>
+                  <th>Source IP</th>
+                  <th>Logon type</th>
+                  <th>Description</th>
+                </tr>
+              </thead>
+              <tbody id="windows-events-body">
+                <tr><td colspan="8" class="empty-state">No Windows events loaded yet.</td></tr>
+              </tbody>
+            </table>
+          </div>
+          </section>
+        </section>
+
+        <section class="view-section" id="intel" data-view tabindex="-1" hidden>
+          <header class="view-heading"><h2>Intel</h2></header>
+          <article class="panel section-empty-state">
+            <h3>Threat intelligence</h3>
+            <p>No threat intelligence sources are configured in this V2 dashboard.</p>
+          </article>
+        </section>
+
+        <section class="view-section" id="reports" data-view tabindex="-1" hidden>
+          <header class="view-heading"><h2>Reports</h2></header>
+          <article class="panel section-empty-state">
+            <h3>Saved reports</h3>
+            <p>No reports have been generated.</p>
+          </article>
+        </section>
+
+        <section class="view-section" id="alerts" data-view tabindex="-1" hidden>
+          <header class="view-heading"><h2>Alerts</h2></header>
+          <section class="panel filter-panel">
           <div class="panel-header">
             <h3>Filter alerts</h3>
           </div>
@@ -126,9 +242,9 @@
             <button id="clear-filters" type="button" class="secondary-btn">Reset</button>
           </div>
           <div id="active-filter-summary" class="active-filter-summary hidden"></div>
-        </section>
+          </section>
 
-        <section class="panel alert-panel">
+          <section class="panel alert-panel">
           <div class="panel-header">
             <h3>Recent alerts</h3>
           </div>
@@ -229,6 +345,7 @@
               </tbody>
             </table>
           </div>
+          </section>
         </section>
       </main>
     </div>

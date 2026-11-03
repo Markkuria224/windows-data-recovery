@@ -38,6 +38,7 @@ def _build_alert(
     severity: str,
     reason: str,
     event_type: str = "login",
+    rule_id: str | None = None,
 ) -> Dict[str, Any]:
     """Create a consistent alert dictionary with the required metadata."""
     timestamp = event.get("timestamp", "")
@@ -49,6 +50,7 @@ def _build_alert(
         "severity": severity,
         "reason": reason,
         "status": "new",
+        "rule_id": rule_id,
     }
 
 
@@ -97,6 +99,7 @@ def detect_repeated_failed_logins(events: Iterable[Dict[str, Any]]) -> List[Dict
                             f"Source IP {source_ip} generated {len(window_events)} failed logins "
                             "within 10 minutes, indicating a sustained password-guessing pattern."
                         ),
+                        rule_id="repeated_failed_logins",
                     )
                 )
                 break
@@ -144,8 +147,9 @@ def detect_unusual_authentication_activity(events: Iterable[Dict[str, Any]], thr
                         "MEDIUM",
                         (
                             f"Source IP {source_ip} produced {len(window_events)} authentication events "
-                            "within 10 minutes, exceeding the configured threshold of {threshold}."
+                            f"within 10 minutes, exceeding the configured threshold of {threshold}."
                         ),
+                        rule_id="unusual_authentication_burst",
                     )
                 )
                 break
@@ -155,6 +159,7 @@ def detect_unusual_authentication_activity(events: Iterable[Dict[str, Any]], thr
 
 def detect_login_pattern_anomalies(events: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Identify suspicious login patterns such as credential stuffing and off-hours access."""
+    events = list(events)
     findings: List[Dict[str, Any]] = []
     findings.extend(detect_credential_stuffing_pattern(events))
     findings.extend(detect_brute_force_success(events))
@@ -206,6 +211,7 @@ def detect_credential_stuffing_pattern(events: Iterable[Dict[str, Any]]) -> List
                             f"Source IP {source_ip} attempted logins for {len(unique_users)} distinct "
                             f"usernames within 10 minutes ({usernames}), which matches a credential-stuffing pattern."
                         ),
+                        rule_id="credential_stuffing",
                     )
                 )
                 break
@@ -254,6 +260,7 @@ def detect_brute_force_success(events: Iterable[Dict[str, Any]]) -> List[Dict[st
                             f"Source IP {source_ip} had {failed_attempts} failed login attempts in the previous 15 minutes "
                             "before a successful login, which is consistent with a brute-force compromise attempt."
                         ),
+                        rule_id="brute_force_success",
                     )
                 )
                 break
@@ -286,6 +293,7 @@ def detect_off_hours_login(events: Iterable[Dict[str, Any]]) -> List[Dict[str, A
                         f"Successful login from {event.get('source_ip', 'unknown')} occurred at {event.get('timestamp')} "
                         "during off-hours (01:00-05:00), which can indicate unusual access timing."
                     ),
+                    rule_id="off_hours_login",
                 )
             )
 
@@ -334,6 +342,7 @@ def detect_rapid_fire_attempts(events: Iterable[Dict[str, Any]]) -> List[Dict[st
                             f"Source IP {source_ip} generated {len(window_events)} authentication events in 5 minutes, "
                             "which exceeds the rapid-fire threshold and may indicate automated attack activity."
                         ),
+                        rule_id="rapid_fire_authentication",
                     )
                 )
                 break
@@ -343,6 +352,7 @@ def detect_rapid_fire_attempts(events: Iterable[Dict[str, Any]]) -> List[Dict[st
 
 def evaluate_events(events: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Run the complete detection pipeline and return a list of alert dictionaries."""
+    events = list(events)
     findings: List[Dict[str, Any]] = []
     findings.extend(detect_repeated_failed_logins(events))
     findings.extend(detect_unusual_authentication_activity(events))

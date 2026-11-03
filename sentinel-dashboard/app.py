@@ -7,6 +7,8 @@ endpoints for status changes without leaving the page.
 
 from __future__ import annotations
 
+import csv
+import io
 import random
 from collections import Counter
 from datetime import datetime, timedelta, timezone
@@ -14,16 +16,66 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from flask import Flask, jsonify, render_template, request
+from werkzeug.exceptions import BadRequest, RequestEntityTooLarge
 
-from analyzer import load_logs_from_csv, normalise_logs
-from database import ALLOWED_ALERT_STATUSES, add_note, get_alerts, init_db, insert_alert, update_alert_status
+from analyzer import MAX_CSV_RECORDS, load_logs_from_csv, normalise_logs, parse_logs_from_csv
+from database import (
+    ALLOWED_ALERT_STATUSES,
+    add_note,
+    get_alerts,
+    get_dashboard_metrics,
+    get_windows_events,
+    init_db,
+    insert_alert,
+    insert_detection_alert,
+    insert_security_events,
+    insert_windows_events,
+    update_alert_status,
+)
 from detector import evaluate_events
+from windows_collector import (
+    WINDOWS_EVENT_IDS,
+    WindowsCollectionPermissionError,
+    WindowsCollectionUnavailable,
+    WindowsEventCollectionError,
+    collect_windows_events,
+    is_windows_collection_available,
+)
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
+MAX_CSV_UPLOAD_BYTES = 2 * 1024 * 1024
+app.config["MAX_CONTENT_LENGTH"] = MAX_CSV_UPLOAD_BYTES + 64 * 1024
 app.config["LIVE_MODE"] = False
 app.config["SIMULATION_EVENTS"] = []
+app.config["WINDOWS_COLLECTION"] = {
+    "status": "idle",
+    "message": "Windows event collection has not been run yet.",
+    "last_collected_at": None,
+}
 
 SAMPLE_LOG_PATH = Path(__file__).resolve().parent / "sample_logs.csv"
+MAX_NOTE_LENGTH = 4000
+
+
+def _json_object_payload(allowed_fields: set[str]) -> tuple[Dict[str, Any] | None, Any | None]:
+    """Parse a JSON object and reject malformed, non-object, or unexpected input."""
+    if not request.is_json:
+        return None, (jsonify({"error": "Content-Type must be application/json."}), 415)
+    try:
+        payload = request.get_json()
+    except BadRequest:
+        return None, (jsonify({"error": "Request body must contain valid JSON."}), 400)
+    if not isinstance(payload, dict):
+        return None, (jsonify({"error": "Request body must be a JSON object."}), 400)
+    unexpected_fields = set(payload) - allowed_fields
+    if unexpected_fields:
+        return None, (jsonify({"error": "Request contains unsupported fields."}), 400)
+    return payload, None
+
+
+@app.errorhandler(RequestEntityTooLarge)
+def request_too_large(_error):
+    return jsonify({"error": "Request exceeds the configured upload size limit."}), 413
 
 
 def _utc_now() -> datetime:
@@ -72,48 +124,6 @@ def _generate_synthetic_events() -> List[Dict[str, Any]]:
     return events
 
 
-def _summarise_events(events: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Build the dashboard metrics from a list of events."""
-    total_events = len(events)
-    successful = sum(1 for event in events if str(event.get("status", "")).lower() == "success")
-    failed = sum(1 for event in events if str(event.get("status", "")).lower() == "failed")
-
-    counts_by_ip = Counter(str(event.get("source_ip", "")).strip() for event in events if str(event.get("source_ip", "")).strip())
-    suspicious_ips = sum(1 for count in counts_by_ip.values() if count >= 3)
-
-    severity_distribution = Counter()
-    for alert in get_alerts():
-        severity_distribution[str(alert.get("severity", "LOW")).upper()] += 1
-
-    last_7_points = []
-    for index in range(7):
-        point_time = _utc_now() - timedelta(days=6 - index)
-        label = point_time.strftime("%a")
-        last_7_points.append({"label": label, "value": 0})
-
-    for event in events:
-        timestamp = datetime.strptime(str(event.get("timestamp", "")).replace("Z", "+00:00"), "%Y-%m-%dT%H:%M:%S%z")
-        delta_days = (datetime.now(timezone.utc) - timestamp).days
-        if 0 <= delta_days < 7:
-            for point in last_7_points:
-                if point["label"] == timestamp.strftime("%a"):
-                    point["value"] += 1
-                    break
-
-    return {
-        "total_events": total_events,
-        "successful_logins": successful,
-        "failed_logins": failed,
-        "suspicious_ips": suspicious_ips,
-        "severity_distribution": {
-            "LOW": severity_distribution.get("LOW", 0),
-            "MEDIUM": severity_distribution.get("MEDIUM", 0),
-            "HIGH": severity_distribution.get("HIGH", 0),
-        },
-        "trend": last_7_points,
-    }
-
-
 def _initialise_demo_events() -> None:
     """Populate the in-memory synthetic dataset from the sample CSV."""
     if app.config["SIMULATION_EVENTS"]:
@@ -123,6 +133,7 @@ def _initialise_demo_events() -> None:
     except FileNotFoundError:
         sample_events = []
     app.config["SIMULATION_EVENTS"] = normalise_logs(sample_events)
+    insert_security_events(app.config["SIMULATION_EVENTS"], "demo")
 
 
 def _normalise_datetime(value: datetime) -> datetime:
@@ -206,37 +217,18 @@ def _filter_alerts(alerts: List[Dict[str, Any]], filters: Dict[str, Any]) -> Lis
 
 
 def _summarise_alerts(alerts: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Summarise a filtered set of alerts for cards and charts."""
+    """Summarise alert-specific values for the severity chart."""
     severity_distribution = Counter()
     for alert in alerts:
         severity_distribution[str(alert.get("severity", "LOW")).upper()] += 1
 
-    last_7_points = []
-    for index in range(7):
-        point_time = _utc_now() - timedelta(days=6 - index)
-        last_7_points.append({"label": point_time.strftime("%a"), "value": 0})
-
-    for alert in alerts:
-        timestamp = _parse_alert_timestamp(alert.get("timestamp"))
-        if timestamp is None:
-            continue
-        for point in last_7_points:
-            label = timestamp.strftime("%a")
-            if point["label"] == label:
-                point["value"] += 1
-                break
-
     return {
-        "total_events": len(alerts),
-        "successful_logins": 0,
-        "failed_logins": 0,
-        "suspicious_ips": len({str(alert.get("source_ip", "")).strip() for alert in alerts if str(alert.get("source_ip", "")).strip()}),
+        "total_alerts": len(alerts),
         "severity_distribution": {
             "LOW": severity_distribution.get("LOW", 0),
             "MEDIUM": severity_distribution.get("MEDIUM", 0),
             "HIGH": severity_distribution.get("HIGH", 0),
         },
-        "trend": last_7_points,
     }
 
 
@@ -267,19 +259,156 @@ def dashboard_api():
     _initialise_demo_events()
     filters = _build_alert_filters()
     filtered_alerts = _filter_alerts(get_alerts(), filters)
-    summary = _summarise_alerts(filtered_alerts)
+    summary = get_dashboard_metrics()
+    summary.update(_summarise_alerts(filtered_alerts))
     summary["alerts"] = filtered_alerts
     summary["live_mode"] = app.config["LIVE_MODE"]
     return jsonify(summary)
 
 
+@app.route("/api/windows-events", methods=["GET"])
+def windows_events_api():
+    """Return locally collected Windows events using optional event filters."""
+    event_id_value = request.args.get("event_id", "").strip()
+    severity = request.args.get("severity", "").strip().upper()
+    if event_id_value:
+        try:
+            event_id = int(event_id_value)
+        except ValueError:
+            return jsonify({"error": "Event ID must be an integer."}), 400
+        if event_id not in WINDOWS_EVENT_IDS:
+            return jsonify({"error": "Unsupported Windows Security event ID."}), 400
+    else:
+        event_id = None
+
+    if severity and severity not in {"LOW", "MEDIUM", "HIGH"}:
+        return jsonify({"error": "Unsupported severity filter."}), 400
+
+    start_raw = str(request.args.get("start", "")).strip()
+    start_time = _parse_alert_timestamp(start_raw)
+    end_time_raw = str(request.args.get("end", "")).strip()
+    end_time = _parse_alert_timestamp(end_time_raw)
+    if (start_raw and start_time is None) or (end_time_raw and end_time is None):
+        return jsonify({"error": "Time filters must be valid ISO timestamps or dates."}), 400
+    if end_time and end_time_raw and "T" not in end_time_raw and " " not in end_time_raw:
+        end_time += timedelta(days=1) - timedelta(microseconds=1)
+    if start_time and end_time and start_time > end_time:
+        return jsonify({"error": "The start time must be earlier than the end time."}), 400
+
+    events = get_windows_events(
+        event_id=event_id,
+        severity=severity or None,
+        start_time=start_time.isoformat().replace("+00:00", "Z") if start_time else None,
+        end_time=end_time.isoformat().replace("+00:00", "Z") if end_time else None,
+    )
+    state = dict(app.config["WINDOWS_COLLECTION"])
+    state["available"] = is_windows_collection_available()
+    if not state["available"]:
+        state["status"] = "unavailable"
+        state["message"] = "Native Windows Security event collection is unavailable on this operating system. CSV import remains available."
+    return jsonify({"events": events, "collection": state})
+
+
+@app.route("/api/csv/import", methods=["POST"])
+def import_csv_api():
+    """Validate and import a bounded CSV file without saving the upload to disk."""
+    if set(request.files) != {"file"} or len(request.files.getlist("file")) != 1:
+        return jsonify({"error": "Upload exactly one CSV file using the 'file' field."}), 400
+    upload = request.files["file"]
+    if not upload.filename or Path(upload.filename).suffix.lower() != ".csv":
+        return jsonify({"error": "Only files with a .csv extension are accepted."}), 400
+
+    csv_bytes = upload.stream.read(MAX_CSV_UPLOAD_BYTES + 1)
+    if len(csv_bytes) > MAX_CSV_UPLOAD_BYTES:
+        return jsonify({"error": "CSV files cannot exceed 2 MiB."}), 413
+
+    try:
+        text_stream = io.TextIOWrapper(io.BytesIO(csv_bytes), encoding="utf-8-sig", newline="")
+        events = parse_logs_from_csv(text_stream, max_records=MAX_CSV_RECORDS)
+    except (ValueError, csv.Error, UnicodeDecodeError) as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    new_events = insert_security_events(events, "csv")
+    findings = evaluate_events(new_events)
+    alerts_created = sum(insert_detection_alert(finding)[1] for finding in findings)
+    return jsonify(
+        {
+            "status": "imported",
+            "records_received": len(events),
+            "events_imported": len(new_events),
+            "duplicates": len(events) - len(new_events),
+            "alerts_created": alerts_created,
+        }
+    )
+
+
+@app.route("/api/windows-events/collect", methods=["POST"])
+def collect_windows_events_api():
+    """Collect, deduplicate, persist, and analyse a bounded set of Windows events."""
+    payload, error_response = _json_object_payload({"lookback_hours", "max_events"})
+    if error_response:
+        return error_response
+    payload = payload or {}
+    lookback_hours = payload.get("lookback_hours", 24)
+    max_events = payload.get("max_events", 500)
+    if isinstance(lookback_hours, bool) or not isinstance(lookback_hours, int) or not 1 <= lookback_hours <= 720:
+        return jsonify({"error": "lookback_hours must be an integer from 1 to 720."}), 400
+    if isinstance(max_events, bool) or not isinstance(max_events, int) or not 1 <= max_events <= 5000:
+        return jsonify({"error": "max_events must be an integer from 1 to 5000."}), 400
+
+    try:
+        collected = collect_windows_events(lookback_hours=lookback_hours, max_events=max_events)
+        new_events = insert_windows_events(collected)
+        findings = evaluate_events(new_events)
+        alerts_created = sum(insert_detection_alert(finding)[1] for finding in findings)
+
+        state = {
+            "status": "success",
+            "message": f"Collection completed: {len(new_events)} new events saved; {len(collected) - len(new_events)} duplicates skipped.",
+            "last_collected_at": _utc_now().isoformat().replace("+00:00", "Z"),
+        }
+        app.config["WINDOWS_COLLECTION"] = state
+        return jsonify(
+            {
+                **state,
+                "available": True,
+                "new_events": len(new_events),
+                "duplicates": len(collected) - len(new_events),
+                "alerts_created": alerts_created,
+            }
+        )
+    except WindowsCollectionUnavailable as exc:
+        status_code = 501
+        status = "unavailable"
+        failure_message = str(exc)
+    except WindowsCollectionPermissionError as exc:
+        status_code = 403
+        status = "permission_denied"
+        failure_message = str(exc)
+    except (ValueError, WindowsEventCollectionError) as exc:
+        status_code = 400 if isinstance(exc, ValueError) else 502
+        status = "error"
+        failure_message = str(exc)
+
+    state = {
+        "status": status,
+        "message": failure_message,
+        "last_collected_at": app.config["WINDOWS_COLLECTION"].get("last_collected_at"),
+    }
+    app.config["WINDOWS_COLLECTION"] = state
+    return jsonify({**state, "available": is_windows_collection_available()}), status_code
+
+
 @app.route("/api/alerts/<int:alert_id>/status", methods=["POST"])
 def update_alert_status_route(alert_id: int):
     """Update the status of an alert and record the timeline event."""
-    payload = request.get_json(silent=True) or {}
-    new_status = str(payload.get("status", "")).strip()
+    payload, error_response = _json_object_payload({"status"})
+    if error_response:
+        return error_response
+    payload = payload or {}
+    new_status = payload.get("status")
 
-    if new_status not in ALLOWED_ALERT_STATUSES:
+    if not isinstance(new_status, str) or new_status not in ALLOWED_ALERT_STATUSES:
         return jsonify({"error": "Unsupported status value."}), 400
 
     try:
@@ -292,11 +421,17 @@ def update_alert_status_route(alert_id: int):
 @app.route("/api/alerts/<int:alert_id>/note", methods=["POST"])
 def add_note_route(alert_id: int):
     """Add an investigation note to an alert and return the updated object."""
-    payload = request.get_json(silent=True) or {}
-    note_text = str(payload.get("note", "")).strip()
+    payload, error_response = _json_object_payload({"note"})
+    if error_response:
+        return error_response
+    payload = payload or {}
+    note_text = payload.get("note")
 
-    if not note_text:
-        return jsonify({"error": "Note cannot be empty."}), 400
+    if not isinstance(note_text, str) or not note_text.strip():
+        return jsonify({"error": "Note must be a non-empty string."}), 400
+    note_text = note_text.strip()
+    if len(note_text) > MAX_NOTE_LENGTH:
+        return jsonify({"error": f"Note cannot exceed {MAX_NOTE_LENGTH} characters."}), 400
 
     try:
         alert = add_note(alert_id, note_text)
@@ -308,8 +443,14 @@ def add_note_route(alert_id: int):
 @app.route("/api/live/simulate", methods=["POST"])
 def live_simulation_route():
     """Start or stop live demo mode and optionally inject synthetic events."""
-    payload = request.get_json(silent=True) or {}
-    action = str(payload.get("action", "tick")).strip().lower()
+    payload, error_response = _json_object_payload({"action"})
+    if error_response:
+        return error_response
+    payload = payload or {}
+    action = payload.get("action", "tick")
+    if not isinstance(action, str):
+        return jsonify({"error": "action must be a string."}), 400
+    action = action.strip().lower()
 
     if action == "start":
         app.config["LIVE_MODE"] = True
@@ -322,22 +463,23 @@ def live_simulation_route():
     if action == "tick":
         new_events = _generate_synthetic_events()
         app.config["SIMULATION_EVENTS"].extend(new_events)
+        insert_security_events(new_events, "simulation")
         findings = evaluate_events(new_events)
         for item in findings:
-            insert_alert(
-                None,
+            insert_detection_alert(
                 {
+                    **item,
                     "timestamp": str(item.get("timestamp") or _event_time(0)),
                     "source_ip": str(item.get("source_ip") or "unknown"),
                     "source_host": str(item.get("source_host") or "unknown"),
                     "event_type": str(item.get("event_type") or "login"),
                     "severity": str(item.get("severity") or "MEDIUM").upper(),
-                    "reason": str(item.get("reason") or "Synthetic detection trigger"),
                     "status": "Open",
-                },
+                }
             )
 
-        summary = _summarise_events(app.config["SIMULATION_EVENTS"])
+        summary = get_dashboard_metrics()
+        summary.update(_summarise_alerts(get_alerts()))
         summary["live_mode"] = app.config["LIVE_MODE"]
         summary["generated_events"] = len(new_events)
         summary["alerts"] = get_alerts()
